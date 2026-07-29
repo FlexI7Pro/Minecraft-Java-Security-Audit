@@ -4,7 +4,7 @@
 
 ## Summary
 
-The `ServerboundKeyPacket` (the encryption response packet sent during login) decodes two byte arrays with **no explicit size limit**. The frame decoder (`Varint21FrameDecoder`) also has **no maximum frame size check** — it only limits VarInt width to 21 bits (~2MB). An attacker can allocate large heap buffers on the server before authentication, with no rate limiting by default (`rate-limit=0`).
+The `ServerboundKeyPacket` (encryption response packet during login) parses two byte arrays with **no explicit size limitation**. The frame decoder (`Varint21FrameDecoder`) does not have any **maximum frame size validation** and just limits the VarInt width to 21 bits (~2MB). The attacker may allocate large heap buffers on the server prior to authentication without any rate limiting (`rate-limit=0`).
 
 ---
 
@@ -26,7 +26,7 @@ private ServerboundKeyPacket(FriendlyByteBuf input) {
 }
 ```
 
-`FriendlyByteBuf.readByteArray()` calls `readByteArray(input, input.readableBytes())`, which uses the **entire remaining frame** as the size limit:
+`FriendlyByteBuf.readByteArray()` invokes `readByteArray(input, input.readableBytes())` which means that the size limit for allocating the array is the **full remaining frame**:
 
 ```java
 public static byte[] readByteArray(ByteBuf input, int maxSize) {
@@ -40,7 +40,7 @@ public static byte[] readByteArray(ByteBuf input, int maxSize) {
 }
 ```
 
-The `Varint21FrameDecoder` accepts frames up to 2MB (21-bit VarInt), with no configurable maximum:
+The `Varint21FrameDecoder` allows receiving the frames with the maximum size of 2MB (21-bit VarInt) without any maximum size configuration:
 
 ```java
 // Varint21FrameDecoder.java
@@ -71,7 +71,7 @@ out.add(in.readBytes(length));  // DirectBuffer allocation
 
 **Evidence from code**:
 
-The `handleKey()` method processes the oversized arrays before validating size:
+The `handleKey()` method processes the arrays with excessive sizes before validating the size limit:
 
 ```java
 // ServerLoginPacketListenerImpl.java:186-200
@@ -94,7 +94,7 @@ public void handleKey(ServerboundKeyPacket packet) {
 }
 ```
 
-The two byte arrays ARE allocated (on heap) before `handleKey` is called — the allocation happens during packet deserialization in `PacketDecoder.decode()`. By the time the RSA size check rejects the input, the memory is already consumed.
+The two byte arrays ARE allocated (heap) prior to the `handleKey` invocation — the allocation occurs during the packet decoding process in `PacketDecoder.decode()`.
 
 **Rate-limit=0 default**: The `rate-limit` property controls `ConnectionRateKicker`. When set to 0 (default), there is no limit on connections from a single IP. The server accepts new connections as fast as the TCP stack can complete handshakes.
 
@@ -104,7 +104,7 @@ The two byte arrays ARE allocated (on heap) before `handleKey` is called — the
 
 ## No Other Pre-Auth Vulnerabilities Found
 
-The remaining login-phase serverbound packets all enforce tight size bounds:
+All other serverbound login packets have strict size constraints enforced:
 
 | Packet | Field | Bound |
 |--------|-------|-------|
@@ -114,9 +114,6 @@ The remaining login-phase serverbound packets all enforce tight size bounds:
 | `ServerboundKeyPacket` | keybytes | **unbounded** |
 | `ServerboundKeyPacket` | encryptedChallenge | **unbounded** |
 
-The 1024-bit RSA key (`Crypt.java:40`) and AES/CFB8 mode (`Crypt.java:200`) are weak by modern standards but not immediately exploitable — RSA factoring requires state-level resources, and CFB8 bit-flipping corrupts the stream framing, making reliable gameplay manipulation infeasible.
+The 1024-bit RSA key (`Crypt.java:40`) and AES/CFB8 mode (`Crypt.java:200`) are weak by today’s standards, but not easy to exploit – factoring RSA key takes state-level resources, and flipping bits in CFB8 will ruin stream framing, thus making gameplay exploitation impossible.
 
-Authentication bypass (joining without a Microsoft account when `online-mode=true`) is NOT possible through code-level vulnerabilities in the vanilla server. The Mojang `hasJoinedServer` API call at `ServerLoginPacketListenerImpl.java:217` is the sole authentication gate, and it cannot be bypassed without either:
-- Modifying JVM system properties (requires server process access — already owning the box)
-- Network-level interception of the server's outbound HTTPS to Mojang
-- Exploiting Mojang's API itself (external dependency)
+Bypassing authentication (joining the game without having Microsoft account if `online-mode=true`) IS NOT POSSIBLE using any code vulnerabilities in the vanilla server implementation. The only authentication point is the Mojang `hasJoinedServer` API call in `ServerLoginPacketListenerImpl.java:217`, which cannot be bypassed either: - Modifying JVM system properties (requires access to the server process – which means you already own the machine) - Intercepting server's outgoing HTTPS connections to Mojang - Abusing Mojang API (external dependency)
